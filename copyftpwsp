@@ -1,0 +1,251 @@
+using Oracle.DataAccess.Client;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.IO;
+using System.Linq;
+using System.Net;
+using WinSCP;
+/****************************************************
+ * необходим рефакторинг - а так на быструю руку работает
+ * использую WinSCP для подкачки указанного по маске файла
+ * вторым аргументом имя таблицы(должны быть поля такие же как у файла порядок и имена
+ * берем файлик с одного перегоняем на второй сервер субд - и пользуемся скл лоадером - папки и пути абсолютные - надо изменить - пока так пойдет
+ * два файла еще нужны для запуска sqlldr in.ctl par.par /oradata10/Qv/
+ * 
+ */
+namespace copyftpwsp
+{
+    class Program
+    {
+        static void Main(string[] args)
+        {
+            //string writePath = @"C:\aaa\succ_dwh.txt";
+            string k = @"C:\aaa\succ_fw.txt";
+            using (StreamWriter sw = new StreamWriter(k, false, System.Text.Encoding.Default))
+            {
+                sw.WriteLine(DateTime.Now.ToString());
+            }
+            string writePath2 = @"C:\aaa\err_fw.txt";
+            using (StreamWriter sw = new StreamWriter(writePath2, false, System.Text.Encoding.Default))
+            {
+                sw.WriteLine(DateTime.Now.ToString());
+            }
+            //string trunc = Console.Read().ToString();
+            string nd = @"D:\cdr\Qvantel\sim\";
+            DirectoryInfo dir = new DirectoryInfo(nd);
+            foreach (FileInfo file in dir.GetFiles())
+            {
+                file.Delete();
+            }
+            DateTime dt = DateTime.Now;
+            dt = dt.AddMinutes(-10);
+            string y, m, d, mins, h;
+            y = dt.Year.ToString();
+            m = dt.Month.ToString();
+            if (Convert.ToInt16(m) < 10) m = '0' + m;
+            d = dt.Day.ToString();
+            if (Convert.ToInt16(d) < 10) d = '0' + d;
+            h = dt.Hour.ToString();
+            if (Convert.ToInt16(h) < 10) h = '0' + h;
+            mins = dt.Minute.ToString();
+            if (Convert.ToInt16(mins) < 10) mins = '0' + mins;
+            string f = args[0] + y + m + d + "";
+            string ftpu = "/appsdata/DBSS/QVANTEL";
+            Ftpfile(ftpu, f, nd);
+            //чистим удаленную папку - поменять потом
+            clearRemote(@"/oradata10/Qv/" + args[1]+".csv");
+            //переименовываем
+            string fln = "";
+            foreach (FileInfo file in dir.GetFiles())
+            {
+               string g= file.FullName;
+                Console.WriteLine(g);
+                fln = file.Name;
+                System.IO.File.Move(g, nd + args[1]+".csv");
+            }
+            //закидываем
+            putRemote(nd + args[1] + ".csv", @"/oradata10/Qv/" );
+            //truncate с 0 и саму табл
+            string oradb = "Data Source=FMSPRD;User Id=FMS_TEH;Needpassword;";
+            OracleConnection conn = new OracleConnection();  // C#
+            conn.ConnectionString = oradb;
+            conn.Open();
+            try
+            {
+                OracleCommand myCommand4 = new OracleCommand("truncate table " + args[1] + "0", conn);
+                //if (trunc == "1")
+                myCommand4.ExecuteNonQuery();
+                OracleCommand myCommand5 = new OracleCommand("truncate table " + args[1], conn);
+                myCommand5.ExecuteNonQuery();
+                //if (trunc == "1")
+                myCommand4.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                using (StreamWriter sw = new StreamWriter(writePath2, true, System.Text.Encoding.Default))
+                {
+                    sw.WriteLine(ex.Message.ToString());
+                }
+            }
+            //вызываем колл
+            callRemote();
+            //основную таблу заливаем
+            try
+            {
+                OracleCommand commandins = new OracleCommand("insert into " + args[1] + " select t.*, '" + fln + "', sysdate from " + args[1] + "0 t", conn);
+                commandins.ExecuteNonQuery();
+            }
+            catch (Exception ex)
+            {
+                using (StreamWriter sw = new StreamWriter(writePath2, true, System.Te
+xt.Encoding.Default))
+                {
+                    sw.WriteLine(ex.Message.ToString());
+                }
+            }
+        }
+        #region AinuraFTP
+        static void Ftpfile(string ftpfilepath, string inputfilepath, string outpath)
+        {
+            SessionOptions sessionOptions = new SessionOptions
+            {
+                Protocol = Protocol.Sftp,
+                HostName = "172.28.141.*",
+                UserName = "fmsprd",
+                Needpassword,
+                SshHostKeyFingerprint = "",
+            };
+            string writePath = @"C:\aaa\succ_fw.txt";
+            string writePath2 = @"C:\aaa\err_fw.txt";
+            try
+            {
+                using (Session session = new Session())
+                {
+                    // Connect
+                    session.Open(sessionOptions);
+                    string ftpfullpath = ftpfilepath + @"/" + inputfilepath + "*";
+                    Console.WriteLine(ftpfullpath);
+                    // Upload files
+                    TransferOptions transferOptions = new TransferOptions();
+                    transferOptions.TransferMode = TransferMode.Binary;
+                    TransferOperationResult transferResult;
+                    transferResult =
+                        session.GetFiles(ftpfullpath, outpath, false, transferOptions);
+                    // Throw on any error
+                    transferResult.Check();
+                    // Print results
+                    foreach (TransferEventArgs transfer in transferResult.Transfers)
+                    {
+                        Console.WriteLine("Download of {0} succeeded", transfer.FileName);
+                        using (StreamWriter sw = new StreamWriter(writePath, true, System.Text.Encoding.Default))
+                        {
+                            sw.WriteLine("Download of {0} succeeded", transfer.FileName);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                using (StreamWriter sw = new StreamWriter(writePath2, true, System.Text.Encoding.Default))
+                {
+                    sw.WriteLine(ex.Message.ToString());
+                }
+            }
+        }
+        #endregion
+        #region Ainuraclearremote
+        static void clearRemote(string ftpfilepath)
+        {
+            SessionFTP so = new SessionFTP();
+            string writePath = @"C:\aaa\succ_fw.txt";
+            string writePath2 = @"C:\aaa\err_fw.txt";
+            try
+            {
+                using (Session session = new Session())
+                {
+                    // Connect
+                    session.Open(so.sessionOptions);
+                    string ftpfullpath = ftpfilepath;
+                    Console.WriteLine(ftpfullpath);
+                    session.RemoveFile(ftpfullpath);
+                    }
+                }
+            catch (Exception ex)
+            {
+                using (StreamWriter sw = new StreamWriter(writePath2, true, System.Text.Encoding.Default))
+                {
+                    sw.WriteLine(ex.Message.ToString());
+                }
+            }
+        }
+        #endregion
+        #region Ainuraputremote
+        static void putRemote(string localfile, string ftpfilepath)
+        {
+            SessionFTP so = new SessionFTP();
+            string writePath = @"C:\aaa\succ_fw.txt";
+            string writePath2 = @"C:\aaa\err_fw.txt";
+            try
+            {
+                using (Session session = new Session())
+                {
+                    // Connect
+                    session.Open(so.sessionOptions);
+                    string ftpfullpath = ftpfilepath;
+                    Console.WriteLine(ftpfullpath);
+                    TransferOptions transferOptions = new TransferOptions();
+                    transferOptions.TransferMode = TransferMode.Binary;
+                    TransferOperationResult transferResult;
+                    transferResult =
+                            session.PutFiles(localfile, ftpfilepath, false,transferOptions);
+transferResult.Check();
+                    // Print results
+                    foreach (TransferEventArgs transfer in transferResult.Transfers)
+                    {
+                        Console.WriteLine("Upload of {0} succeeded", transfer.FileName);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                using (StreamWriter sw = new StreamWriter(writePath2, true, System.Text.Encoding.Default))
+                {
+                    sw.WriteLine(ex.Message.ToString());
+                }
+            }
+        }
+        #endregion
+        #region Ainuracallremote
+        static void callRemote()
+        {
+            SessionFTP so = new SessionFTP();
+            string writePath = @"C:\aaa\succ_fw.txt";
+            string writePath2 = @"C:\aaa\err_fw.txt";
+            try
+            {
+                using (Session session = new Session())
+                {
+                    // Connect
+                    session.Open(so.sessionOptions);
+                    session.ExecuteCommand(@"cd /oradata10/Qv").Check();
+                    OperationResultBase tr;
+                    tr = session.ExecuteCommand(@"sqlldr parfile=par.par");
+                    tr.Check();
+                    using (StreamWriter sw = new StreamWriter(writePath, true, System.Text.Encoding.Default))
+                    {
+                        sw.WriteLine( "Запись в базу "+tr.IsSuccess.ToString());
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                using (StreamWriter sw = new StreamWriter(writePath2, true, System.Text.Encoding.Default))
+                {
+                    sw.WriteLine(ex.Message.ToString());
+                }
+            }
+        }
+        #endregion
+    }
+}
