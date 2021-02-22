@@ -1,0 +1,6 @@
+userid=fms_teh/"Yourpass"
+control=in.ctl
+log=log1.log
+bad=in.bad
+data=contractssimcard.csv
+direct=true
